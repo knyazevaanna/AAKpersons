@@ -3,8 +3,7 @@ AAK
 
 aak - утилита для тестирование алгоритма ААК (автоматический авторитетный контроль)
 
-aak [--config aak.conf][--pipeline pipeline.xml][--pipeline2 pipeline2.xml]
-[--output output.xml][--debug]
+aak [--config aak.conf] [--pipeline pipeline.xml] [--pipeline2 pipeline2.xml] [--output output.xml] [--debug]
 
 Текстовый конфигурационный файл.
 
