@@ -35,27 +35,27 @@ XML-документ передается на вход pipeline. Пример �
 
 Шаблон для обработки записи в pipeline:
 
- <xsl:stylesheet version="1.0"
-    xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
-    xmlns:marc="http://www.loc.gov/MARC21/slim"
-    exclude-result-prefixes="marc">
-    <xsl:output method="xml" encoding="UTF-8" omit-xml-declaration="yes" />
+    <xsl:stylesheet version="1.0"
+        xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+        xmlns:marc="http://www.loc.gov/MARC21/slim"
+        exclude-result-prefixes="marc">
+        <xsl:output method="xml" encoding="UTF-8" omit-xml-declaration="yes" />
 
-    <!-- тоджественное преобразование -->
+        <!-- тоджественное преобразование -->
 
-    <xsl:template match="*|@*">
-        <xsl:copy>
+        <xsl:template match="*|@*">
+          <xsl:copy>
             <xsl:apply-templates select="@*" />
             <xsl:apply-templates />
-        </xsl:copy>
-    </xsl:template>
+          </xsl:copy>
+        </xsl:template>
 
-    <!-- обработка документа ... -->
+        <!-- обработка документа ... -->
 
- </xsl:stylesheet>
+    </xsl:stylesheet>
 
 В результате работы pipeline получается новый XML-документ вида
 
- <output>
-  ...
- </output>
+    <output>
+      ...
+    </output>
