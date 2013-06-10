@@ -1,0 +1,366 @@
+#!/usr/bin/perl
+
+=pod
+
+=head1 NAME
+
+aak - утилита для тестирование алгоритма ААК (автоматический авторитетный контроль)
+
+=head1 SYNOPSIS
+
+aak [--config aak.conf][--pipeline pipeline.xml][--pipeline2 pipeline2.xml]
+[--output output.xml][--debug]
+
+=head1 DESCRIPTION
+
+=head2 Алгоритм ААК
+
+=head1 CONFIG
+
+Опции:
+
+=over 4
+
+=item --config F<aak.conf>
+
+Текстовый конфигурационный файл.
+
+ proxy: host:port
+ dbclass: A
+ dbhost: 127.0.0.1
+ dbport: 2100
+ dbbases: authors
+ dbclass: B 
+ dbhost: 127.0.0.1
+ dbport: 2100
+ dbbases: book
+ authorlist: list.txt
+
+=item --pipeline F<pipeline.xml>
+
+Файл для задания XSLT pipeline в формате XML (см. раздел XSLT pipeline).
+
+=item --pipeline2 F<pipeline2.xml>
+
+Файл для задания XSLT pipeline в формате XML (см. раздел XSLT pipeline).
+
+=item --output F<output.xml>
+
+Выходной файл.
+
+=item --debug
+
+Вывод отладочных сообщений.
+
+=back
+
+=head1 XSLT pipeline
+
+=over 4
+
+Полученная пара записей (из источников А и Б) группируются в виде XML-документа. Созданный
+XML-документ передается на вход pipeline. Пример конфигурации pipeline:
+
+ <pipeline>
+     <xslt stylesheet='stage1.xsl' />
+ </pipeline>
+
+Шаблон для обработки записи в pipeline:
+
+ <xsl:stylesheet version="1.0"
+    xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+    xmlns:marc="http://www.loc.gov/MARC21/slim"
+    exclude-result-prefixes="marc">
+    <xsl:output method="xml" encoding="UTF-8" omit-xml-declaration="yes" />
+
+    <!-- тоджественное преобразование -->
+
+    <xsl:template match="*|@*">
+        <xsl:copy>
+            <xsl:apply-templates select="@*" />
+            <xsl:apply-templates />
+        </xsl:copy>
+    </xsl:template>
+
+    <!-- обработка документа ... -->
+
+ </xsl:stylesheet>
+
+В результате работы pipeline получается новый XML-документ вида
+
+ <output>
+  ...
+ </output>
+
+=cut
+use Getopt::Long;
+use Pod::Usage;
+use Fcntl;
+use lib '../../../ZOOM/ZOOM-1.2/blib/arch';
+use lib '../../../ZOOM/ZOOM-1.2/blib/lib';
+use ZOOM;
+use ZOOM::Utils::RecordConv;
+use lib 'Net-Z3950-PQF-0.04/blib/arch';
+use lib 'Net-Z3950-PQF-0.04/blib/lib';
+use Net::Z3950::PQF;
+use Lingua::Stem::Snowball;
+use Lingua::StopWords qw( getStopWords );
+use Data::Dumper;
+
+use XML::LibXML;
+use strict;
+
+$|=1;
+
+my $help;
+my $man;
+my $usage = "More info about command - `aak -man'";
+my $pipeline = 'pipeline.xml';
+my $pipeline2 = 'pipeline2.xml';
+my $output = 'output.xml';
+my $config = 'aak.conf';
+my $DEBUG;
+my $CHARSET = 'UTF-8';
+my $SYNTAX = 'RUSMARC';
+my $PROXY = undef;
+
+GetOptions('help|?' => \$help, 'man' => \$man, 'pipeline=s' => \$pipeline, 'pipeline2=s' => \$pipeline2,
+   'output=s' => \$output, 'debug' => \$DEBUG, 'config=s' => \$config); 
+
+pod2usage(-exitval => 1, -message => $usage) if $help;
+pod2usage(-verbose => 2) if $man;
+pod2usage(-exitval => 2, -message => $usage) unless $config;
+
+my $stemmer = Lingua::Stem::Snowball->new(
+    lang => 'ru',
+    encoding => 'UTF-8');
+die $@ if $@;
+
+my $stoplist = getStopWords('ru', 'UTF-8');
+
+my $pqf_parser = new Net::Z3950::PQF;
+die "No parser for PQF" unless $pqf_parser;
+
+my %BASES = ();
+my @ALIST =();
+{
+    my $currdbclass = undef;
+    my $authorlist = undef;
+    open(my $in, '<:utf8', $config) or die "can't open file - $!";
+    while (my $line = <$in>) {
+        chop($line);
+        $line =~ s/^[\s]+//;
+
+        next if $line =~ /^#/;
+
+        my ($tag, $val) = split(/:/, $line);
+        $tag =~ s/[\s]+$//;
+        $val =~ s/^[\s]+//;
+        $val =~ s/[\s]+$//;
+        $tag = lc($tag);
+        if ($tag eq 'authorlist') {
+            $authorlist = $val;
+        } elsif ($tag eq 'dbclass') {
+            $currdbclass = uc($val);
+        } elsif ($tag eq 'dbtitle') {
+            $BASES{$currdbclass}->{title} = $val if defined $currdbclass;
+        } elsif ($tag eq 'dbhost') {
+            $BASES{$currdbclass}->{host} = $val if defined $currdbclass;
+        } elsif ($tag eq 'dbport') {
+            $BASES{$currdbclass}->{port} = $val if defined $currdbclass;
+        } elsif ($tag eq 'dbbases') {
+            $BASES{$currdbclass}->{bases} = $val if defined $currdbclass;
+        } elsif ($tag eq 'proxy') {
+            $PROXY = $val;
+        }
+    }
+    close($in) or warn "$!";
+    foreach my $key(keys %BASES) {
+        mydebug(sprintf("use database %s - %s:%d/%s\n", $key,
+                $BASES{$key}->{host}, $BASES{$key}->{port},
+                $BASES{$key}->{bases}));
+    }
+    open(my $list, '<:utf8', $authorlist) or die "can't open file - $!";
+    while (my $line = <$list>) {
+        chop($line);
+        $line =~ s/^[\s]+//;
+        next if $line =~ /^#/;
+        $line =~ s/[\s]+$//;
+        push @ALIST, $line;
+    }
+    close($list) or warn "$!";
+    mydebug(sprintf("use author's file - %s (%d)\n", $authorlist, $#ALIST+1));
+}
+
+foreach my $key (keys %BASES) {
+    my $dbh = new ZOOM::Connection;
+    $dbh->option_set(
+        -async => 0,
+        -charset => $CHARSET,
+        -preferredRecordSyntax => $SYNTAX,
+        -proxy => $PROXY);
+    mydebug(sprintf("connect with database %s  ...", $key));
+    $dbh->connect(-host => $BASES{$key}->{host},
+        port => $BASES{$key}->{port}, -bases => $BASES{$key}->{bases});
+    die $dbh->err() if $dbh->err();
+    $BASES{$key}->{dbh} = $dbh;
+    mydebug("\n");
+}
+
+my $recconv = new ZOOM::Utils::RecordConv;
+die "Can't create record converter" unless $recconv;
+die $recconv->get_error() unless ($recconv->configure($pipeline)) == 0;
+
+my $recconv2 = new ZOOM::Utils::RecordConv;
+die "Can't create record converter" unless $recconv2;
+die $recconv2->get_error() unless ($recconv2->configure($pipeline2)) == 0;
+
+# preparing output file
+sysopen(OUT, $output, O_CREAT | O_WRONLY) || die "can't open file $!";
+
+print OUT '<?xml version="1.0" encoding="UTF-8"?>', "\n";
+print OUT '<collection>', "\n";
+foreach my $name (@ALIST) {
+    my $pqfstr = sprintf "\@attr 1=1003 \"%s\"", $name;
+
+    my $rs_a = $BASES{A}->{dbh}->search_pqf($pqfstr);
+    mydebug(sprintf("found for A - %d\n", $rs_a->size()));
+    next if $rs_a->size() == 0;
+
+    my $rs_b = $BASES{B}->{dbh}->search_pqf($pqfstr);
+    mydebug(sprintf("found for B - %d\n", $rs_b->size()));
+
+    my @ar_a = $rs_a->records(0, $rs_a->size());
+
+    foreach my $r_a (@ar_a) {
+        mydebug('a');
+        my ($buf_a, $len) = $r_a->xml();
+        foreach my $i (0..$rs_b->size()-1) {
+            my $r_b = $rs_b->record($i);
+            mydebug('b');
+            my ($buf_b, $len) = $r_b->xml();
+            my ($out, $out_len, $rc) = $recconv->record(<<EOF);          
+<?xml version="1.0"?>
+<aak>
+ <a>$buf_a</a>
+ <b>$buf_b</b>
+</aak>
+EOF
+            my $parser = XML::LibXML->new();
+            my $dom = $parser->parse_string($out);
+            $dom->setEncoding('UTF-8');
+            my $xpc = XML::LibXML::XPathContext->new($dom);
+            my $search_response = '';
+
+            foreach my $node ($xpc->findnodes('/output/search_request')) {
+                my ($name, $dbclass);
+                foreach my $attr ($node->attributes()) {
+                    if ($attr->name eq 'name') {
+                        $name = $attr->textContent;
+                        utf8::decode($name);
+                    }
+                    if ($attr->name eq 'dbclass') {
+                        $dbclass = $attr->textContent;
+                        utf8::decode($dbclass);
+                        $dbclass = uc($dbclass);
+                    }
+                }
+                my $str = $node->textContent;
+                utf8::decode($str);
+                my $pqf_node = $pqf_parser->parse($str);
+                die $pqf_parser->errmsg() unless (defined $pqf_node);
+
+                #print Dumper($pqf_node), "\n" if $DEBUG;
+                #print pqf_node2str($pqf_node), "\n" if $DEBUG;
+
+                $dbclass = 'A' unless ($dbclass eq 'A' or $dbclass eq 'B');
+                my $rs = $BASES{$dbclass}->{dbh}->search_pqf(pqf_node2str($pqf_node));
+                mydebug('s');
+                unless ($BASES{$dbclass}->{dbh}->err()) {
+                    my $size = $rs->size();
+                    $search_response .= <<EOF;
+<search_response name="$name" dbclass="$dbclass">$size</search_response>
+EOF
+                } else {
+                    my $err_code = $BASES{$dbclass}->{dbh}->error_no();
+                    my $err_msg = $BASES{$dbclass}->{dbh}->error_cp();
+                    $err_msg .= ' - ' . $BASES{$dbclass}->{dbh}->error_addinfo() if $BASES{$dbclass}->{dbh}->error_addinfo();
+
+                    $search_response .= <<EOF;
+<search_response name="$name" dbclass="$dbclass" error_code="$err_code">$err_msg</search_response>
+EOF
+                    mydebug('E');
+                }
+            }
+            my ($out2, $out2_len, $rc) = $recconv2->record(<<EOF);
+<?xml version="1.0"?>
+<aak>
+ <a>$buf_a</a>
+ <b>$buf_b</b>
+ $search_response
+</aak>
+EOF
+            my $parser = XML::LibXML->new();
+            my $dom2 = $parser->parse_string($out2);
+            $dom2->setEncoding('UTF-8');
+            my $buf2 = $dom2->toString(1);
+            $buf2 =~ s/<\?xml.*\?>//g;
+            print OUT $buf2;
+        }
+        mydebug("\n");
+    }
+}
+print OUT '</collection>', "\n";
+
+close(OUT);
+
+sub pqf_node2str {
+    my $n = shift;
+
+    if ($n->isa('Net::Z3950::PQF::TermNode')) {
+        if (chk_attr_stem($n->{attrs})) {
+            my @av = split (/ /, $n->{value});
+            $stemmer->stem_in_place(\@av);
+            my $term = join ' ', grep {!$stoplist->{$_}} @av;
+            return getattrs($n->{attrs}) . ' {' . $term . '}';
+        } else {
+            return getattrs($n->{attrs}) . ' {' . $n->{value} . '}';
+        }
+    } elsif ($n->isa('Net::Z3950::PQF::AndNode')) {
+        return '@and ' . pqf_node2str($n->{'sub'}[0]) . ' ' . pqf_node2str($n->{'sub'}[1]);
+    } elsif ($n->isa('Net::Z3950::PQF::OrNode')) {
+        return '@or ' . pqf_node2str($n->{'sub'}[0]) . ' ' . pqf_node2str($n->{'sub'}[1]);
+    } elsif ($n->isa('Net::Z3950::PQF::NotNode')) {
+        return '@not ' . pqf_node2str($n->{'sub'}[0]) . ' ' . pqf_node2str($n->{'sub'}[1]);
+    } else {
+        die "Unsuppored PQF node type";
+    }
+}
+sub getattrs {
+    my $ref = shift;
+    my $output = '';
+    foreach my $ref2 (@{$ref}) {
+        my ($set, $type, $val) =@{$ref2};
+        if ($set =~ /bib-1/i and $type == 2 and $val == 101) {
+            $type = 5;
+            $val = 1;
+        }
+        $output .= ' ' if ($output ne '');
+        $output .= '@attr ' . $type .'=' . $val;
+    }
+    return $output;
+}
+sub chk_attr_stem {
+    my $ref = shift;
+    foreach my $ref2 (@{$ref}) {
+        my ($set, $type, $val) =@{$ref2};
+        next unless $set =~ /bib-1/i and $type == 2 and $val == 101;
+        return 1;
+    }
+    return 0;
+}
+
+sub mydebug {
+    print STDOUT shift if $DEBUG;
+}
+

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="koi8-r"?>
+<pipeline>
+    
+    <xslt stylesheet='stage1.xsl' />
+</pipeline>
