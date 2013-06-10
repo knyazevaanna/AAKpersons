@@ -8,16 +8,16 @@ aak [--config aak.conf][--pipeline pipeline.xml][--pipeline2 pipeline2.xml]
 
 Текстовый конфигурационный файл.
 
- proxy: host:port
- dbclass: A
- dbhost: 127.0.0.1
- dbport: 2100
- dbbases: authors
- dbclass: B 
- dbhost: 127.0.0.1
- dbport: 2100
- dbbases: book
- authorlist: list.txt
+    proxy: host:port
+    dbclass: A
+    dbhost: 127.0.0.1
+    dbport: 2100
+    dbbases: authors
+    dbclass: B 
+    dbhost: 127.0.0.1
+    dbport: 2100
+    dbbases: book
+    authorlist: list.txt
 
 pipeline.xml -- Файл для задания XSLT pipeline в формате XML.
 
@@ -29,9 +29,9 @@ output.xml -- Выходной файл.
 Полученная пара записей (из источников А и Б) группируются в виде XML-документа. Созданный
 XML-документ передается на вход pipeline. Пример конфигурации pipeline:
 
- <pipeline>
-     <xslt stylesheet='stage1.xsl' />
- </pipeline>
+    <pipeline>
+      <xslt stylesheet='stage1.xsl' />
+    </pipeline>
 
 Шаблон для обработки записи в pipeline:
 
